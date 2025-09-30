@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
                                QListWidget, QLabel, QTextEdit, QPushButton, QSizePolicy,
-                               QFileDialog, QListWidgetItem, QFontComboBox, QSpinBox, QSlider, QColorDialog, QGridLayout, QCheckBox, QGroupBox, QScrollArea, QProgressDialog, QComboBox, QAbstractItemView, QLineEdit, QMessageBox)
+                               QFileDialog, QListWidgetItem, QFontComboBox, QSpinBox, QSlider, QColorDialog, QGridLayout, QCheckBox, QGroupBox, QScrollArea, QProgressDialog, QComboBox, QAbstractItemView, QLineEdit, QMessageBox, QFormLayout, QToolButton, QMenu)
 from PySide6.QtCore import Qt, QThreadPool, QSize, Signal, QRect
 from PySide6.QtGui import QPixmap, QIcon, QFont, QColor, QPainter, QShortcut, QKeySequence, QImage
 from pathlib import Path
@@ -160,78 +160,87 @@ class MainWindow(QMainWindow):
 
         # Right: controls (put into a scrollable panel)
         controls_layout = QVBoxLayout()
-        self.text_input = QTextEdit()
-        self.text_input.setPlaceholderText('Watermark text...')
-        controls_layout.addWidget(self.text_input)
+        controls_layout.setSpacing(8)
+        controls_layout.setContentsMargins(8, 8, 8, 8)
 
-        # font selector
-        self.font_combo = QFontComboBox()
-        controls_layout.addWidget(self.font_combo)
-        self.font_size = QSpinBox()
-        self.font_size.setRange(8, 200)
-        self.font_size.setValue(36)
-        controls_layout.addWidget(self.font_size)
-
-        # opacity
-        self.opacity_slider = QSlider(Qt.Horizontal)
-        self.opacity_slider.setRange(0, 100)
-        self.opacity_slider.setValue(70)
-        controls_layout.addWidget(self.opacity_slider)
-
-        # rotation
-        self.rotation_slider = QSlider(Qt.Horizontal)
-        self.rotation_slider.setRange(-180, 180)
-        self.rotation_slider.setValue(0)
-        controls_layout.addWidget(self.rotation_slider)
-
-        # color button
+        # ========== Text ==========
+        self.text_input = QTextEdit(); self.text_input.setPlaceholderText('Watermark text...')
+        self.text_input.setFixedHeight(64)
         self.color_btn = QPushButton('Choose Color')
-        controls_layout.addWidget(self.color_btn)
+        # position button with popup menu
+        self.position_btn = QToolButton()
+        self.position_btn.setText('位置')
+        self.position_btn.setToolTip('设置水印位置')
+        self.position_btn.setPopupMode(QToolButton.InstantPopup)
+        self._anchor_menu = QMenu(self)
+        self._anchor_symbols = {
+            'top-left': '↖', 'top-center': '↑', 'top-right': '↗',
+            'center-left': '←', 'center': '·', 'center-right': '→',
+            'bottom-left': '↙', 'bottom-center': '↓', 'bottom-right': '↘',
+        }
+        for name, sym in self._anchor_symbols.items():
+            act = self._anchor_menu.addAction(f"{sym} {name}")
+            act.triggered.connect(lambda checked=False, n=name: self.set_anchor(n))
+        self.position_btn.setMenu(self._anchor_menu)
+        text_group = QGroupBox('Text')
+        tg = QVBoxLayout()
+        tg.addWidget(self.text_input)
+        color_row = QHBoxLayout();
+        color_row.addWidget(QLabel('Color'))
+        color_row.addWidget(self.color_btn)
+        color_row.addSpacing(8)
+        color_row.addWidget(QLabel('Position'))
+        color_row.addWidget(self.position_btn)
+        color_row.addStretch()
+        tg.addLayout(color_row)
+        text_group.setLayout(tg)
+        controls_layout.addWidget(text_group)
 
-        # font style: bold / italic
-        style_layout = QHBoxLayout()
-        self.bold_cb = QCheckBox('B')
-        self.bold_cb.setToolTip('Bold')
-        self.italic_cb = QCheckBox('I')
-        self.italic_cb.setToolTip('Italic')
-        style_layout.addWidget(self.bold_cb)
-        style_layout.addWidget(self.italic_cb)
-        controls_layout.addLayout(style_layout)
+        # ========== Font ==========
+        self.font_combo = QFontComboBox()
+        self.font_size = QSpinBox(); self.font_size.setRange(8, 200); self.font_size.setValue(36)
+        font_group = QGroupBox('Font')
+        ff = QFormLayout(); ff.addRow('Family', self.font_combo); ff.addRow('Size', self.font_size)
+        font_group.setLayout(ff)
+        controls_layout.addWidget(font_group)
 
-        # show handle checkbox
-        self.show_handle_cb = QCheckBox('Show handle')
-        self.show_handle_cb.setChecked(True)
-        controls_layout.addWidget(self.show_handle_cb)
-
-        # outline (stroke)
-        outline_layout = QHBoxLayout()
+        # ========== Style (with Effects merged) ==========
+        self.bold_cb = QCheckBox('Bold')
+        self.italic_cb = QCheckBox('Italic')
         self.outline_cb = QCheckBox('Outline')
-        self.outline_size = QSpinBox()
-        self.outline_size.setRange(1, 40)
-        self.outline_size.setValue(2)
-        outline_layout.addWidget(self.outline_cb)
-        outline_layout.addWidget(self.outline_size)
-        controls_layout.addLayout(outline_layout)
-
-        # shadow controls
-        shadow_layout = QHBoxLayout()
+        self.outline_size = QSpinBox(); self.outline_size.setRange(1, 40); self.outline_size.setValue(2)
+        self.show_handle_cb = QCheckBox('Show handle'); self.show_handle_cb.setChecked(True)
+        # shadow (moved from Effects)
         self.shadow_cb = QCheckBox('Shadow')
-        self.shadow_alpha = QSlider(Qt.Horizontal)
-        self.shadow_alpha.setRange(0, 100)
-        self.shadow_alpha.setValue(50)
-        shadow_layout.addWidget(self.shadow_cb)
-        shadow_layout.addWidget(self.shadow_alpha)
-        controls_layout.addLayout(shadow_layout)
-
-        # shadow color
+        self.shadow_alpha = QSlider(Qt.Horizontal); self.shadow_alpha.setRange(0, 100); self.shadow_alpha.setValue(50)
         self.shadow_color_btn = QPushButton('Shadow Color')
-        controls_layout.addWidget(self.shadow_color_btn)
+        style_group = QGroupBox('Style')
+        sf = QFormLayout()
+        bold_row = QHBoxLayout(); bold_row.addWidget(self.bold_cb); bold_row.addWidget(self.italic_cb); bold_row.addStretch()
+        sf.addRow('Weight', bold_row)
+        outline_row = QHBoxLayout(); outline_row.addWidget(self.outline_cb); outline_row.addWidget(QLabel('Size')); outline_row.addWidget(self.outline_size); outline_row.addStretch()
+        sf.addRow('Outline', outline_row)
+        sf.addRow(self.show_handle_cb)
+        sh_row = QHBoxLayout(); sh_row.addWidget(self.shadow_cb); sh_row.addWidget(QLabel('Alpha')); sh_row.addWidget(self.shadow_alpha); sh_row.addStretch()
+        sf.addRow('Shadow', sh_row)
+        sf.addRow('Shadow Color', self.shadow_color_btn)
+        style_group.setLayout(sf)
+        controls_layout.addWidget(style_group)
 
-        # position label
-        self.pos_label = QLabel('Pos: 50% , 50%')
-        controls_layout.addWidget(self.pos_label)
+    # (Effects merged into Style)
 
-    # removed Apply (demo) button
+        # ========== Transform ==========
+        self.rotation_slider = QSlider(Qt.Horizontal); self.rotation_slider.setRange(-180, 180); self.rotation_slider.setValue(0)
+        self.opacity_slider = QSlider(Qt.Horizontal); self.opacity_slider.setRange(0, 100); self.opacity_slider.setValue(70)
+        trans_group = QGroupBox('Transform')
+        tf = QFormLayout(); tf.addRow('Rotation', self.rotation_slider); tf.addRow('Opacity', self.opacity_slider)
+        trans_group.setLayout(tf)
+        controls_layout.addWidget(trans_group)
+
+        # (Position group removed; position menu is next to Color)
+        controls_layout.addStretch(1)
+
+        # removed Apply (demo) button
         # export controls group
         export_group = QGroupBox('Export')
         export_v = QVBoxLayout()
@@ -295,39 +304,13 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(export_group)
         controls_layout.addStretch()
 
-        # Anchor grid inside a GroupBox (compact, icon-like buttons)
-        self.anchor_grid = QGridLayout()
-        anchors = [
-            ('top-left', '↖'), ('top-center', '↑'), ('top-right', '↗'),
-            ('center-left', '←'), ('center', '·'), ('center-right', '→'),
-            ('bottom-left', '↙'), ('bottom-center', '↓'), ('bottom-right', '↘'),
-        ]
-        self.anchor_buttons = {}
-        for idx, (name, symbol) in enumerate(anchors):
-            btn = QPushButton(symbol)
-            btn.setFixedSize(36, 36)
-            btn.setFlat(True)
-            btn.setObjectName(f'anchor_{name.replace("-", "_")}')
-            btn.setToolTip(name)
-            btn.clicked.connect(lambda checked, n=name: self.set_anchor(n))
-            r = idx // 3
-            c = idx % 3
-            self.anchor_grid.addWidget(btn, r, c)
-            self.anchor_buttons[name] = btn
-
-        anchor_group = QGroupBox('Quick anchors')
-        anchor_group.setLayout(self.anchor_grid)
-        controls_layout.addWidget(anchor_group)
-
-        # wrap controls in widget + scroll area to keep right panel tidy
+        # (anchors moved into Position group above)
+        # add controls panel directly (no scroll area), adjust width to avoid scrollbar needs
         controls_widget = QWidget()
         controls_widget.setLayout(controls_layout)
         controls_widget.setObjectName('controls_widget')
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(controls_widget)
-        scroll.setMaximumWidth(360)
-        main_layout.addWidget(scroll)
+        controls_widget.setFixedWidth(320)
+        main_layout.addWidget(controls_widget)
 
 
         # Thread pool
@@ -422,6 +405,9 @@ class MainWindow(QMainWindow):
             'position': {'x': 0.5, 'y': 0.5},
             'anchor': 'center'
         }
+
+        # initialize position button display
+        self._update_position_button('center')
 
         # init export UI states
         self._toggle_name_fields()
@@ -789,9 +775,8 @@ class MainWindow(QMainWindow):
         self.current_image_path = norm_path
         # reset anchor to center on new image for predictable behavior
         self.watermark_config['anchor'] = 'center'
-        # clear anchor button highlight
-        for btn in getattr(self, 'anchor_buttons', {}).values():
-            btn.setStyleSheet('')
+        # update position label on the button
+        self._update_position_button('center')
 
         pix = QPixmap(norm_path)
         if pix.isNull():
@@ -886,16 +871,8 @@ class MainWindow(QMainWindow):
         if name in mapping:
             self.watermark_config['position'] = mapping[name]
             self.watermark_config['anchor'] = name
-            # update visual highlight for anchor buttons
-            for aname, btn in getattr(self, 'anchor_buttons', {}).items():
-                if aname == name:
-                    # simple highlight
-                    btn.setStyleSheet('background: #4477ff; color: white;')
-                else:
-                    btn.setStyleSheet('')
-            # update position label to reflect anchor
-            pos = mapping[name]
-            self.pos_label.setText(f"Pos: {int(pos['x']*100)}% , {int(pos['y']*100)}%")
+            # update position button text to reflect anchor
+            self._update_position_button(name)
             # ensure handle visibility per checkbox
             self.watermark_config['show_handle'] = bool(self.show_handle_cb.isChecked())
             self.update_preview()
@@ -920,11 +897,15 @@ class MainWindow(QMainWindow):
         self.watermark_config['position'] = {'x': rx, 'y': ry}
         # when user manually drags, use center anchor to align visually with drag point
         self.watermark_config['anchor'] = 'center'
-        # update position label
-        self.pos_label.setText(f'Pos: {int(rx*100)}% , {int(ry*100)}%')
-        # if user is dragging, consider anchors deselected (clear any highlight)
-        for btn in getattr(self, 'anchor_buttons', {}).values():
-            btn.setStyleSheet('')
+        # when dragging, set button text to Center to indicate free placement
+        self._update_position_button('center')
         # update preview with or without handle based on checkbox
         self.watermark_config['show_handle'] = bool(self.show_handle_cb.isChecked())
         self.update_preview()
+
+    def _update_position_button(self, anchor: str):
+        try:
+            sym = self._anchor_symbols.get(anchor, '·')
+            self.position_btn.setText(f"位置 {sym}")
+        except Exception:
+            pass
