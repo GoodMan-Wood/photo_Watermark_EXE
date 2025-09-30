@@ -101,6 +101,47 @@ class PreviewLabel(QLabel):
         painter.end()
 
 
+class ThumbListWidget(QListWidget):
+    """Thumbnail list that accepts external file drops and emits file paths."""
+    filesDropped = Signal(list)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        try:
+            self.setAcceptDrops(True)
+            self.setDropIndicatorShown(True)
+            # only accept drops (no internal drag), and treat as copy
+            self.setDragDropMode(QAbstractItemView.DropOnly)
+            self.setDefaultDropAction(Qt.CopyAction)
+            # QAbstractItemView handles events on viewport
+            self.viewport().setAcceptDrops(True)
+        except Exception:
+            pass
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        first_path = None
+        for u in urls:
+            p = u.toLocalFile()
+            if p:
+                first_path = p
+                break
+        if first_path:
+            # emit only one path as list to keep signal shape
+            self.filesDropped.emit([first_path])
+        event.acceptProposedAction()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -115,7 +156,7 @@ class MainWindow(QMainWindow):
 
         # Left: thumbnail list + import buttons
         left_layout = QVBoxLayout()
-        self.thumb_list = QListWidget()
+        self.thumb_list = ThumbListWidget()
         self.thumb_list.setMaximumWidth(260)
         self.thumb_list.setIconSize(QSize(72, 72))
         self.thumb_list.setObjectName('thumb_list')
@@ -142,6 +183,11 @@ class MainWindow(QMainWindow):
         left_layout.addLayout(btn_layout)
 
         main_layout.addLayout(left_layout)
+        # accept single-image drag to thumbnail list
+        try:
+            self.thumb_list.filesDropped.connect(self.on_external_files_dropped)
+        except Exception:
+            pass
 
         # Center: preview
         preview_layout = QVBoxLayout()
@@ -804,6 +850,14 @@ class MainWindow(QMainWindow):
 
         self.current_preview_pixmap = pix
         self.update_preview()
+
+    def on_external_files_dropped(self, paths: list):
+        # only import the first supported image per request
+        for p in paths:
+            _, ext = os.path.splitext(p.lower())
+            if ext in SUPPORTED_EXT:
+                self.add_image_item(p)
+                break
 
     def update_preview(self):
         # if there is a current preview pixmap, draw watermark overlay using core compositor
