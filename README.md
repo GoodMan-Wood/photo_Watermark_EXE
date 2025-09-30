@@ -112,6 +112,10 @@ pyinstaller --noconfirm --windowed --name PhotoWatermark app.py
 - 若使用自定义图标，添加 `--icon assets/icon.ico`
 - 如遇到缺少 Qt 平台插件（如 "windows"）的问题，请先执行 `pip install -r requirements.txt` 并重新打包
 
+也可以使用提供的脚本/工作流：
+- 本地脚本（PowerShell）：`scripts/build_windows.ps1`（可加 `-OneFile`）
+- GitHub Actions：`.github/workflows/windows-release.yml`（推送 tag 如 `v1.0.0` 自动出包）
+
 ## 常见问题（FAQ）
 
 - 导出到源目录被阻止？
