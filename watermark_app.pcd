@@ -1,0 +1,130 @@
+Project: Photo Watermark - PCD
+
+Overview:
+This document (PCD) specifies the Product Configuration Document for a Windows desktop application that applies watermarks to images locally. It captures functional requirements, data contracts, UI behavior, edge cases, templates, and acceptance criteria for implementation and testing.
+
+1. Goals and constraints
+- Goal: Provide a simple, reliable Windows desktop app to batch-apply text/image watermarks to photos with rich layout and export options.
+- Constraint: Offline processing, no cloud/upload. Runs on Windows. Must preserve transparency for PNG watermark and support common image formats.
+
+2. High-level features
+- Import images: single/multiple files, drag-and-drop, folder import.
+- Preview: thumbnail list with filename; main preview shows selected image with live watermark overlay.
+- Watermarks: text watermark (required) and image watermark (optional advanced).
+- Layout: preset positions (9-grid), manual drag, rotation (advanced), scaling and opacity controls.
+- Export: choose output folder (not source by default), filename rules, output format (JPEG/PNG), JPEG quality, optional resize.
+- Templates: save/load/manage watermark templates; auto-load last settings on app start.
+
+3. Contract (tiny API / data shapes)
+- ImageItem
+  - id: string (UUID)
+  - path: string (absolute path)
+  - filename: string
+  - width: int
+  - height: int
+  - thumbnailPath: string (cached thumbnail path or base64)
+
+- WatermarkConfig
+  - type: "text" | "image"
+  - text: string (if type == "text")
+  - fontFamily: string
+  - fontSize: int
+  - fontStyle: { bold: bool, italic: bool }
+  - color: string (hex or rgba)
+  - opacity: float (0.0 - 1.0)
+  - shadow: { enabled: bool, offsetX: int, offsetY: int, blur: int, color: string }
+  - stroke: { enabled: bool, width: int, color: string }
+  - imagePath: string (if type == "image")
+  - imageScale: float (relative scale 0.0 - 1.0)
+  - rotation: float (degrees)
+  - position: { x: float, y: float } (relative 0.0-1.0 within image)
+  - anchor: "top-left" | "top-center" | "top-right" | "center-left" | "center" | "center-right" | "bottom-left" | "bottom-center" | "bottom-right"
+
+- ExportConfig
+  - outputFolder: string
+  - allowOverwrite: bool
+  - filenameRule: "original" | "prefix" | "suffix"
+  - prefix: string
+  - suffix: string
+  - format: "jpeg" | "png"
+  - jpegQuality: int (0-100)
+  - resize: { mode: "none" | "width" | "height" | "percent", value: int }
+
+- Template
+  - id: string
+  - name: string
+  - createdAt: ISO datetime
+  - config: WatermarkConfig
+
+4. Detailed requirements and acceptance criteria
+
+4.1 Importing images
+- Requirement: Support drag-and-drop of single image to app window. Accept file types: .jpg/.jpeg, .png, .bmp, .tif/.tiff. Batch import via file selector (multi-select) or import folder recursion.
+- UI: Show a scrolling list of imported images with thumbnail and filename. Selecting a thumbnail updates main preview.
+- Acceptance
+  - Dragging 1 or >1 supported files adds them to list.
+  - Dragging unsupported file types should show a dismissible error toast and ignore the files.
+
+4.2 Supported formats
+- Input: Must support JPEG, PNG (with alpha), strongly recommended BMP and TIFF.
+- Output: User chooses JPEG or PNG. If PNG output preserve alpha channel when watermark includes transparency.
+- Acceptance: Loading PNG with alpha should render correctly in preview.
+
+4.3 Exporting images
+- Requirement: User selects output folder. By default, disallow selection of the original file's folder for export (to avoid overwrite). If user attempts, show confirmation and require explicit opt-in.
+- Filename rules: original, add prefix, add suffix. Implement safe filename sanitization.
+- JPEG quality slider 0-100. Default 90.
+- Resize options (advanced): user may set by width/height (px) or percentage. Maintain aspect ratio unless user disables it.
+- Acceptance: Exported images must exist in target folder with expected names, size, format and visual watermark applied.
+
+4.4 Text watermark (core)
+- Requirement: User enters arbitrary text. Provide font family list (system fonts), size selector, bold/italic toggles, color picker, opacity slider (0-100%).
+- Provide optional shadow and stroke toggles with basic parameters.
+- Acceptance: For a selected image, preview must update within 250ms for typical resolutions (<= 4k) when changing text, opacity or position.
+
+4.5 Image watermark (advanced)
+- Requirement: User selects a local image file (support PNG with alpha). Provide scale control, opacity slider, rotation.
+- Acceptance: PNG logo with alpha overlays correctly on images; scaling and opacity applied in preview.
+
+4.6 Layout & interaction
+- Real-time preview: Changing any watermark parameter updates the main preview.
+- Preset positions: Implement 9 anchors. Clicking an anchor moves watermark to that relative location.
+- Manual drag: Allow grabbing watermark overlay in preview and repositioning; update WatermarkConfig.position accordingly (relative coords).
+- Rotation slider: updates rotation in preview.
+- Acceptance: Dragging or anchor click should move the watermark and update position fields; saved template captures these values.
+
+4.7 Templates and persistence
+- Save current WatermarkConfig as a named template. List templates in sidebar with name and quick-apply button.
+- Persist templates and last-used settings to local app config (e.g., JSON in %APPDATA% or a settings file). Load last-used on startup.
+- Acceptance: After saving a template, it is selectable and re-applies settings exactly. On app restart, last-used settings reflect in UI.
+
+5. Error handling and edge cases
+- Corrupted or unsupported images: show clear error and skip file.
+- Large images (e.g., > 50 MP): downscale for preview but process full-resolution for export unless memory constraints; show progress bar.
+- Disk write errors: on export failure, surface per-file error and continue with others.
+- Filename collisions: if output contains an existing filename, apply a suffix counter (e.g., _1) unless user allowed overwrite.
+
+6. Performance and quality goals
+- Responsiveness: UI actions and preview updates should feel snappy (<250ms for common operations on mid-range hardware).
+- Batch export: support queuing exports with progress and cancel option. Use multi-threaded worker pool sized to available CPU cores minus 1.
+
+7. Security & privacy
+- No network access required by default. Do not upload user images. If telemetry is implemented it must be opt-in.
+
+8. Test cases (minimal)
+- Import a folder with mixed supported/unsupported files -> supported files appear, unsupported ignored.
+- Create a text watermark with opacity 50%, position bottom-right, export to PNG -> resulting file has watermark semi-transparent at bottom-right.
+- Load PNG logo with alpha as image watermark -> overlay preserves transparency.
+- Save a template, restart app, load template -> settings restored.
+
+9. UI/UX notes (recommendations)
+- Left: imported images list (thumbnails). Center: main preview with overlay and drag handles. Right: controls for watermark type and parameters. Bottom: export controls and progress.
+
+10. Implementation notes / platform specifics
+- Windows desktop: choose framework: WPF (.NET) or Electron (JS) or PyQt (Python). Each has tradeoffs. If choose .NET/WPF, prefer System.Drawing.Common or ImageSharp for processing; if Electron/JS, prefer Sharp or Canvas libs; for Python, Pillow.
+
+11. Acceptance criteria (summary)
+- All mandatory items (import, preview, text watermark, preset positions, export with filename rules, templates) implemented and tested.
+
+Change log:
+- v0.1 initial draft
