@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
                                QListWidget, QLabel, QTextEdit, QPushButton, QSizePolicy,
-                               QFileDialog, QListWidgetItem, QFontComboBox, QSpinBox, QSlider, QColorDialog, QGridLayout, QCheckBox, QGroupBox, QScrollArea, QProgressDialog, QComboBox, QAbstractItemView, QLineEdit, QMessageBox, QFormLayout, QToolButton, QMenu)
+                               QFileDialog, QListWidgetItem, QFontComboBox, QSpinBox, QSlider, QColorDialog, QGridLayout, QCheckBox, QGroupBox, QScrollArea, QProgressDialog, QComboBox, QAbstractItemView, QLineEdit, QMessageBox, QFormLayout, QToolButton, QMenu, QDialog, QListWidget, QInputDialog)
 from PySide6.QtCore import Qt, QThreadPool, QSize, Signal, QRect
 from PySide6.QtGui import QPixmap, QIcon, QFont, QColor, QPainter, QShortcut, QKeySequence, QImage
 from pathlib import Path
@@ -13,6 +13,8 @@ from src.io.file_manager import SUPPORTED_EXT, list_images_in_folder
 from src.utils.workers import Worker
 from src.core.image_processor import compose_preview_qpixmap
 from src.io.exporter import export_image
+from src.config.config_store import get_appdata_dir, load_config, save_config
+from src.templates.template_manager import TemplateManager
 import importlib
 try:
     PILImage = importlib.import_module('PIL.Image')
@@ -209,6 +211,25 @@ class MainWindow(QMainWindow):
         controls_layout.setSpacing(8)
         controls_layout.setContentsMargins(8, 8, 8, 8)
 
+        # ========== Template ==========
+        template_group = QGroupBox('Template')
+        tpl_v = QVBoxLayout()
+        tpl_row = QHBoxLayout()
+        self.template_combo = QComboBox()
+        self.template_apply_btn = QPushButton('Apply')
+        self.template_save_btn = QPushButton('Save As…')
+        self.template_manage_btn = QPushButton('Manage…')
+        tpl_row.addWidget(self.template_combo, 1)
+        tpl_row.addWidget(self.template_apply_btn)
+        tpl_v.addLayout(tpl_row)
+        tpl_btns = QHBoxLayout()
+        tpl_btns.addWidget(self.template_save_btn)
+        tpl_btns.addWidget(self.template_manage_btn)
+        tpl_btns.addStretch()
+        tpl_v.addLayout(tpl_btns)
+        template_group.setLayout(tpl_v)
+        controls_layout.addWidget(template_group)
+
         # ========== Text ==========
         self.text_input = QTextEdit(); self.text_input.setPlaceholderText('Watermark text...')
         self.text_input.setFixedHeight(64)
@@ -382,6 +403,11 @@ class MainWindow(QMainWindow):
         self.thumb_list.itemClicked.connect(self.on_thumb_clicked)
         self.export_btn.clicked.connect(self.on_export_current)
         self.export_all_btn.clicked.connect(self.on_export_all)
+        # template wiring
+        self.template_apply_btn.clicked.connect(self.on_template_apply_clicked)
+        self.template_save_btn.clicked.connect(self.on_template_save_as)
+        self.template_manage_btn.clicked.connect(self.on_manage_templates)
+        self.template_combo.currentIndexChanged.connect(self.on_template_combo_changed)
         # output path now chosen at export time (no persistent output folder)
         self.naming_rule.currentIndexChanged.connect(self._toggle_name_fields)
         self.resize_mode.currentIndexChanged.connect(self._toggle_resize_fields)
@@ -455,6 +481,9 @@ class MainWindow(QMainWindow):
         self._toggle_name_fields()
         self._toggle_resize_fields()
 
+        # init template system (manager + auto-load last)
+        self._init_templates()
+
     # output directory will be chosen at export time; keep no persistent field
 
     def _toggle_name_fields(self):
@@ -471,6 +500,253 @@ class MainWindow(QMainWindow):
         self.resize_width.setEnabled(mode == 'Width')
         self.resize_height.setEnabled(mode == 'Height')
         self.resize_percent.setEnabled(mode == 'Percent')
+
+    # ===== Template helpers =====
+    def _init_templates(self):
+        try:
+            base = get_appdata_dir()
+            self._template_dir = base / 'templates'
+            self._tm = TemplateManager(self._template_dir)
+        except Exception:
+            # fallback to local folder if AppData not available
+            self._template_dir = Path(os.getcwd()) / 'templates'
+            self._tm = TemplateManager(self._template_dir)
+        # load app config for last used template
+        try:
+            self._app_config = load_config()
+        except Exception:
+            self._app_config = {}
+        self._refresh_template_list()
+        # auto-load last template if exists
+        last = self._app_config.get('last_used_template') if isinstance(self._app_config, dict) else None
+        if last and self._tm.exists(last):
+            self._select_template_in_combo(last)
+            self._load_template_by_name(last)
+
+    def _refresh_template_list(self, select: Optional[str] = None):
+        names = []
+        try:
+            names = sorted(self._tm.list_templates())
+        except Exception:
+            pass
+        self.template_combo.blockSignals(True)
+        self.template_combo.clear()
+        if names:
+            self.template_combo.addItems(names)
+            # select preferred
+            if select and select in names:
+                self._select_template_in_combo(select)
+        else:
+            self.template_combo.addItem('(no templates)')
+            self.template_combo.setCurrentIndex(0)
+        self.template_combo.blockSignals(False)
+
+    def _select_template_in_combo(self, name: str):
+        for i in range(self.template_combo.count()):
+            if self.template_combo.itemText(i) == name:
+                self.template_combo.setCurrentIndex(i)
+                return
+
+    def _collect_template_config(self) -> dict:
+        # ensure watermark_config reflects current controls
+        self.update_preview()
+        cfg = dict(self.watermark_config)
+        # persist UI-toggled-only fields as well
+        cfg.update({
+            'show_handle': bool(self.show_handle_cb.isChecked()),
+            'bold': bool(self.bold_cb.isChecked()),
+            'italic': bool(self.italic_cb.isChecked()),
+            'outline': bool(self.outline_cb.isChecked()),
+            'outline_size': int(self.outline_size.value()),
+            'outline_color': '#000000',
+            'shadow': bool(self.shadow_cb.isChecked()),
+            'shadow_alpha': float(self.shadow_alpha.value()) / 100.0,
+            'shadow_color': getattr(self, '_shadow_color', QColor('#000000')).name(),
+        })
+        return cfg
+
+    def _apply_template_config(self, tpl: dict):
+        # set UI controls from template and update preview at the end
+        # block signals to avoid redundant updates
+        blockers = []
+        for w in [self.text_input, self.font_combo, self.font_size, self.opacity_slider, self.rotation_slider,
+                  self.bold_cb, self.italic_cb, self.outline_cb, self.outline_size,
+                  self.shadow_cb, self.shadow_alpha]:
+            try:
+                blockers.append((w, w.blockSignals(True)))
+            except Exception:
+                pass
+        try:
+            self.text_input.setPlainText(tpl.get('text', ''))
+            fam = tpl.get('font_family')
+            if fam:
+                try:
+                    self.font_combo.setCurrentFont(QFont(fam))
+                except Exception:
+                    pass
+            if 'font_size' in tpl:
+                self.font_size.setValue(int(tpl['font_size']))
+            if 'opacity' in tpl:
+                self.opacity_slider.setValue(int(round(float(tpl['opacity']) * 100)))
+            if 'rotation' in tpl:
+                self.rotation_slider.setValue(int(round(float(tpl['rotation']))))
+            col = tpl.get('color')
+            if col:
+                self.watermark_color = QColor(col)
+            self.bold_cb.setChecked(bool(tpl.get('bold', False)))
+            self.italic_cb.setChecked(bool(tpl.get('italic', False)))
+            self.outline_cb.setChecked(bool(tpl.get('outline', False)))
+            self.outline_size.setValue(int(tpl.get('outline_size', self.outline_size.value())))
+            # outline_color reserved
+            self.shadow_cb.setChecked(bool(tpl.get('shadow', False)))
+            self.shadow_alpha.setValue(int(round(float(tpl.get('shadow_alpha', 0.5)) * 100)))
+            sc = tpl.get('shadow_color')
+            if sc:
+                self._shadow_color = QColor(sc)
+            # anchor & position
+            anchor = tpl.get('anchor', 'center')
+            pos = tpl.get('position') or {'x': 0.5, 'y': 0.5}
+            self.watermark_config['anchor'] = anchor
+            self.watermark_config['position'] = pos
+            self._update_position_button(anchor)
+        finally:
+            for w, prev in blockers:
+                try:
+                    w.blockSignals(prev)
+                except Exception:
+                    pass
+        self.update_preview()
+
+    def _load_template_by_name(self, name: str):
+        tpl = self._tm.load_template(name)
+        if tpl is None:
+            return
+        self._apply_template_config(tpl)
+        # persist as last used
+        try:
+            if not isinstance(self._app_config, dict):
+                self._app_config = {}
+            self._app_config['last_used_template'] = name
+            save_config(self._app_config)
+        except Exception:
+            pass
+
+    def on_template_combo_changed(self, idx: int):
+        if self.template_combo.count() == 0:
+            return
+        name = self.template_combo.currentText()
+        # ignore placeholder
+        if name == '(no templates)':
+            return
+        # don't auto-apply on change to avoid surprises; keep for Apply button
+        # Here we silently store the selection as pending
+        self._pending_template = name
+
+    def on_template_apply_clicked(self):
+        name = getattr(self, '_pending_template', None) or self.template_combo.currentText()
+        if name and name != '(no templates)':
+            self._load_template_by_name(name)
+
+    def on_template_save_as(self):
+        name, ok = QInputDialog.getText(self, 'Save Template', 'Template name:')
+        if not ok or not name:
+            return
+        name = str(name).strip()
+        if not name:
+            return
+        if self._tm.exists(name):
+            ret = QMessageBox.question(self, 'Overwrite?', f'模板 "{name}" 已存在，是否覆盖？',
+                                       QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if ret != QMessageBox.Yes:
+                return
+        cfg = self._collect_template_config()
+        try:
+            self._tm.save_template(name, cfg)
+            self._refresh_template_list(select=name)
+            # persist last used
+            if not isinstance(self._app_config, dict):
+                self._app_config = {}
+            self._app_config['last_used_template'] = name
+            save_config(self._app_config)
+            QMessageBox.information(self, 'Template', f'模板已保存：{name}')
+        except Exception as e:
+            QMessageBox.warning(self, 'Template', f'保存失败：{e}')
+
+    def on_manage_templates(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Manage Templates')
+        v = QVBoxLayout(dlg)
+        lst = QListWidget()
+        names = []
+        try:
+            names = sorted(self._tm.list_templates())
+        except Exception:
+            pass
+        for n in names:
+            lst.addItem(n)
+        v.addWidget(lst)
+        btn_row = QHBoxLayout()
+        btn_del = QPushButton('Delete')
+        btn_ren = QPushButton('Rename')
+        btn_close = QPushButton('Close')
+        btn_row.addWidget(btn_ren)
+        btn_row.addWidget(btn_del)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_close)
+        v.addLayout(btn_row)
+
+        def refresh_local():
+            lst.clear()
+            for n in sorted(self._tm.list_templates()):
+                lst.addItem(n)
+
+        def do_delete():
+            it = lst.currentItem()
+            if not it:
+                return
+            n = it.text()
+            ret = QMessageBox.question(dlg, 'Delete', f'删除模板 "{n}"？',
+                                       QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if ret != QMessageBox.Yes:
+                return
+            try:
+                self._tm.delete_template(n)
+                refresh_local()
+                self._refresh_template_list()
+            except Exception as e:
+                QMessageBox.warning(dlg, 'Delete', f'删除失败：{e}')
+
+        def do_rename():
+            it = lst.currentItem()
+            if not it:
+                return
+            old = it.text()
+            new, ok = QInputDialog.getText(dlg, 'Rename Template', 'New name:', text=old)
+            if not ok or not new:
+                return
+            new = str(new).strip()
+            if not new or new == old:
+                return
+            if self._tm.exists(new):
+                QMessageBox.warning(dlg, 'Rename', '同名模板已存在。')
+                return
+            # perform rename by load+save+delete
+            try:
+                data = self._tm.load_template(old)
+                if data is None:
+                    QMessageBox.warning(dlg, 'Rename', '原模板不存在。')
+                    return
+                self._tm.save_template(new, data)
+                self._tm.delete_template(old)
+                refresh_local()
+                self._refresh_template_list(select=new)
+            except Exception as e:
+                QMessageBox.warning(dlg, 'Rename', f'重命名失败：{e}')
+
+        btn_del.clicked.connect(do_delete)
+        btn_ren.clicked.connect(do_rename)
+        btn_close.clicked.connect(dlg.accept)
+        dlg.exec()
 
     def on_apply(self):
         txt = self.text_input.toPlainText().strip()

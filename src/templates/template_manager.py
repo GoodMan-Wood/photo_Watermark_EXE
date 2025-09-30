@@ -20,3 +20,16 @@ class TemplateManager:
             return None
         with open(path, 'r', encoding='utf-8') as f:
             return json.load(f)
+
+    def list_templates(self):
+        return [p.stem for p in self.storage_dir.glob('*.json')]
+
+    def delete_template(self, name: str) -> bool:
+        path = self.storage_dir / f"{name}.json"
+        if path.exists():
+            path.unlink()
+            return True
+        return False
+
+    def exists(self, name: str) -> bool:
+        return (self.storage_dir / f"{name}.json").exists()
