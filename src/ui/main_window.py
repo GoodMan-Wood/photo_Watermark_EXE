@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
                                QListWidget, QLabel, QPushButton, QSizePolicy,
                                QFileDialog, QListWidgetItem, QFontComboBox, QSpinBox, QSlider, QColorDialog, QGridLayout, QCheckBox, QGroupBox, QScrollArea, QProgressDialog, QComboBox, QAbstractItemView, QLineEdit, QMessageBox, QFormLayout, QToolButton, QMenu, QDialog, QListWidget, QInputDialog)
-from PySide6.QtCore import Qt, QThreadPool, QSize, Signal, QRect
+from PySide6.QtCore import Qt, QThreadPool, QSize, Signal, QRect, QTimer
 from PySide6.QtGui import QPixmap, QIcon, QFont, QColor, QPainter, QShortcut, QKeySequence, QImage
 from pathlib import Path
 import hashlib
@@ -180,8 +180,10 @@ class MainWindow(QMainWindow):
         btn_layout = QHBoxLayout()
         self.import_files_btn = QPushButton('Import Files')
         self.import_folder_btn = QPushButton('Import Folder')
+        self.clear_cache_btn = QPushButton('Clear Cache')
         btn_layout.addWidget(self.import_files_btn)
         btn_layout.addWidget(self.import_folder_btn)
+        btn_layout.addWidget(self.clear_cache_btn)
         left_layout.addLayout(btn_layout)
 
         main_layout.addLayout(left_layout)
@@ -387,6 +389,8 @@ class MainWindow(QMainWindow):
         self._running_tasks = []
         self._export_progress = None
         self._cancel_export = False
+        # track pending thumbnail tasks
+        self._pending_thumbs = 0
 
         # keyboard shortcuts for selection
         try:
@@ -397,12 +401,22 @@ class MainWindow(QMainWindow):
 
         # cache dir：使用用户可写目录，避免发行版（只读目录）无法写入导致缩略图不可用
         try:
-            base = get_appdata_dir()
-            self.cache_dir = base / 'cache' / 'thumbnails'
+            from src.utils.paths import get_cache_dir
+            self.cache_dir = get_cache_dir()
         except Exception:
-            # 兜底回退到当前目录（开发环境）
-            self.cache_dir = Path(os.getcwd()) / 'cache' / 'thumbnails'
+            try:
+                base = get_appdata_dir()
+                self.cache_dir = base / 'cache' / 'thumbnails'
+            except Exception:
+                # 兜底回退到当前目录（开发环境）
+                self.cache_dir = Path(os.getcwd()) / 'cache' / 'thumbnails'
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        # 每次启动时对缩略图缓存执行一次配额清理：默认 <=200MB、<=10000 文件、<=60 天
+        try:
+            from src.utils.cache import enforce_cache_quota
+            enforce_cache_quota(self.cache_dir, max_bytes=200*1024*1024, max_files=10000, max_age_days=60)
+        except Exception:
+            pass
 
         # wiring
         self.import_files_btn.clicked.connect(self.on_import_files)
@@ -410,6 +424,7 @@ class MainWindow(QMainWindow):
         self.thumb_list.itemClicked.connect(self.on_thumb_clicked)
         self.export_btn.clicked.connect(self.on_export_current)
         self.export_all_btn.clicked.connect(self.on_export_all)
+        self.clear_cache_btn.clicked.connect(self.on_clear_cache_clicked)
         # template wiring
         self.template_apply_btn.clicked.connect(self.on_template_apply_clicked)
         self.template_save_btn.clicked.connect(self.on_template_save_as)
@@ -515,11 +530,25 @@ class MainWindow(QMainWindow):
     # ===== Template helpers =====
     def _init_templates(self):
         try:
-            base = get_appdata_dir()
-            self._template_dir = base / 'templates'
+            from src.utils.paths import get_templates_dir
+            self._template_dir = get_templates_dir()
+            self._template_dir.mkdir(parents=True, exist_ok=True)
+            # 迁移旧模板（一次性）：若临时目录为空但 AppData 有模板，则拷贝过来
+            try:
+                old_base = get_appdata_dir()
+                old_tpl = old_base / 'templates'
+                if self._template_dir.exists() and not any(self._template_dir.iterdir()) and old_tpl.exists():
+                    for p in old_tpl.glob('*.json'):
+                        try:
+                            import shutil
+                            shutil.copy2(str(p), str(self._template_dir / p.name))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
             self._tm = TemplateManager(self._template_dir)
         except Exception:
-            # fallback to local folder if AppData not available
+            # fallback to local folder
             self._template_dir = Path(os.getcwd()) / 'templates'
             self._tm = TemplateManager(self._template_dir)
         # load app config for last used template
@@ -998,6 +1027,12 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self.thumb_list.addItem(item)
+        # 轻量清理：导入时触发一次快速配额检查（非阻塞）
+        try:
+            from src.utils.cache import enforce_cache_quota
+            enforce_cache_quota(self.cache_dir, max_bytes=200*1024*1024, max_files=10000, max_age_days=60)
+        except Exception:
+            pass
 
         # auto-select newly added item so user sees preview immediately
         self.thumb_list.setCurrentItem(item)
@@ -1023,6 +1058,16 @@ class MainWindow(QMainWindow):
         worker.signals.result.connect(lambda res, it=item: self.on_thumbnail_ready(res, it))
         # attach per-item error handler so failed thumbnails still get a placeholder
         worker.signals.error.connect(lambda err, it=item: self.on_thumbnail_error(err, it))
+        # track finished to know when to refresh all icons once
+        try:
+            worker.signals.finished.connect(self.on_thumb_task_finished)
+        except Exception:
+            pass
+        # increment pending count before start to avoid race
+        try:
+            self._pending_thumbs += 1
+        except Exception:
+            self._pending_thumbs = 1
         self.pool.start(worker)
 
     def on_thumbnail_ready(self, dst_path: str, item: QListWidgetItem):
@@ -1032,7 +1077,12 @@ class MainWindow(QMainWindow):
         tried_paths = []
         if dst_path and os.path.exists(dst_path):
             tried_paths.append(dst_path)
-            pix = QPixmap(dst_path)
+            # 优先尝试直接加载，失败再走 Pillow 转换
+            try:
+                from src.utils.qt_image import qpixmap_from_path_with_pil
+                pix = qpixmap_from_path_with_pil(dst_path)
+            except Exception:
+                pix = QPixmap(dst_path)
             if not pix.isNull():
                 icon = QIcon(pix.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation))
                 item.setIcon(icon)
@@ -1045,12 +1095,37 @@ class MainWindow(QMainWindow):
         if orig:
             tried_paths.append(orig)
             try:
-                pix2 = QPixmap(orig)
+                from src.utils.qt_image import qpixmap_from_path_with_pil
+                pix2 = qpixmap_from_path_with_pil(orig)
                 if not pix2.isNull():
                     icon = QIcon(pix2.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation))
                     item.setIcon(icon)
                     if getattr(self, '_debug_thumbs', False):
                         print('  set icon from original image')
+                    return
+            except Exception:
+                pass
+
+        # next fallback: use PIL to downscale original to small QPixmap
+        if PILImage is not None and orig:
+            try:
+                img = PILImage.open(orig)
+                try:
+                    _ImageOps = importlib.import_module('PIL.ImageOps')
+                    img = _ImageOps.exif_transpose(img)
+                except Exception:
+                    pass
+                img = img.convert('RGBA')
+                # downscale to a small size for icon
+                img.thumbnail((96, 96))
+                # save to a temp file in cache and load via QPixmap
+                key = hashlib.sha1(orig.encode('utf-8')).hexdigest()
+                tmp_path = str(self.cache_dir / f"tmp_icon_{key}.png")
+                img.save(tmp_path, format='PNG')
+                pix3 = QPixmap(tmp_path)
+                if not pix3.isNull():
+                    icon = QIcon(pix3.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                    item.setIcon(icon)
                     return
             except Exception:
                 pass
@@ -1073,15 +1148,70 @@ class MainWindow(QMainWindow):
             # fallback: leave empty icon
             pass
 
+    def on_thumb_task_finished(self):
+        # decrease pending thumbnail tasks; when all done, refresh icons once
+        try:
+            self._pending_thumbs -= 1
+        except Exception:
+            self._pending_thumbs = 0
+        if self._pending_thumbs <= 0:
+            self._pending_thumbs = 0
+            # debounce a bit to ensure file writes are flushed
+            QTimer.singleShot(120, self._refresh_thumbnails_icons)
+
+    def _refresh_thumbnails_icons(self):
+        # Iterate all items and try to set icon from cache; fallback to original
+        for i in range(self.thumb_list.count()):
+            item = self.thumb_list.item(i)
+            orig = item.data(Qt.UserRole)
+            if not orig:
+                continue
+            try:
+                key = hashlib.sha1(orig.encode('utf-8')).hexdigest()
+                dst = str(self.cache_dir / f"{key}.png")
+                pix = None
+                if os.path.exists(dst):
+                    try:
+                        from src.utils.qt_image import qpixmap_from_path_with_pil
+                        pix = qpixmap_from_path_with_pil(dst)
+                    except Exception:
+                        pix = QPixmap(dst)
+                if (pix is None) or pix.isNull():
+                    try:
+                        from src.utils.qt_image import qpixmap_from_path_with_pil
+                        pix = qpixmap_from_path_with_pil(orig)
+                    except Exception:
+                        pix = QPixmap(orig)
+                if pix and not pix.isNull():
+                    item.setIcon(QIcon(pix.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
+                else:
+                    # placeholder
+                    tmp = QPixmap(64, 64)
+                    tmp.fill(QColor('#f0f0f0'))
+                    item.setIcon(QIcon(tmp))
+            except Exception:
+                pass
+
     def on_worker_error(self, err_tuple):
         exctype, value, tb = err_tuple
         print('Worker error:', exctype, value)
         print(tb)
 
     def on_thumbnail_error(self, err_tuple, item: QListWidgetItem):
-        # when thumbnail generation fails for this item, set a visual placeholder
+        # 当缩略图生成失败时，尽力从原图直接生成小图标作为兜底
         if getattr(self, '_debug_thumbs', False):
             print('on_thumbnail_error for', item.text(), 'err=', err_tuple[1])
+        try:
+            orig = item.data(Qt.UserRole)
+            if orig and os.path.exists(orig):
+                pix2 = QPixmap(orig)
+                if not pix2.isNull():
+                    icon = QIcon(pix2.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                    item.setIcon(icon)
+                    return
+        except Exception:
+            pass
+        # 最终占位
         try:
             pix = QPixmap(64, 64)
             pix.fill(QColor('#f8d7da'))
@@ -1109,7 +1239,11 @@ class MainWindow(QMainWindow):
         # update position label on the button
         self._update_position_button('center')
 
-        pix = QPixmap(norm_path)
+        try:
+            from src.utils.qt_image import qpixmap_from_path_with_pil
+            pix = qpixmap_from_path_with_pil(norm_path)
+        except Exception:
+            pix = QPixmap(norm_path)
         if pix.isNull():
             # try PIL fallback: open and write a temporary PNG then load
             if PILImage is not None:
@@ -1145,6 +1279,14 @@ class MainWindow(QMainWindow):
             if ext in SUPPORTED_EXT:
                 self.add_image_item(p)
                 break
+
+    def on_clear_cache_clicked(self):
+        try:
+            from src.utils.cache import clear_cache_dir
+            files_deleted, bytes_freed = clear_cache_dir(self.cache_dir)
+            QMessageBox.information(self, 'Cache', f'已清理 {files_deleted} 个文件，释放 {bytes_freed/1024/1024:.1f} MB')
+        except Exception as e:
+            QMessageBox.warning(self, 'Cache', f'清理失败：{e}')
 
     def update_preview(self):
         # if there is a current preview pixmap, draw watermark overlay using core compositor
