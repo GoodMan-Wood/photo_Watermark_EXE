@@ -244,15 +244,6 @@ class MainWindow(QMainWindow):
         # export controls group
         export_group = QGroupBox('Export')
         export_v = QVBoxLayout()
-        # output folder
-        out_row = QHBoxLayout()
-        out_row.addWidget(QLabel('Output Folder'))
-        self.export_out_dir = QLineEdit()
-        self.export_out_dir.setPlaceholderText('Choose a folder…')
-        self.export_out_browse = QPushButton('Browse…')
-        out_row.addWidget(self.export_out_dir, 1)
-        out_row.addWidget(self.export_out_browse)
-        export_v.addLayout(out_row)
         # format
         format_row = QHBoxLayout()
         format_row.addWidget(QLabel('Format'))
@@ -280,21 +271,26 @@ class MainWindow(QMainWindow):
         name_row.addWidget(self.name_prefix)
         name_row.addWidget(self.name_suffix)
         export_v.addLayout(name_row)
-        # resize options
-        resize_row = QHBoxLayout()
-        resize_row.addWidget(QLabel('Resize'))
+        # resize options (two rows for better fit)
+        resize_row1 = QHBoxLayout()
+        resize_row1.addWidget(QLabel('Resize'))
         self.resize_mode = QComboBox(); self.resize_mode.addItems(['None', 'Width', 'Height', 'Percent'])
+        self.resize_percent = QSpinBox(); self.resize_percent.setRange(5, 500); self.resize_percent.setValue(100)
+        resize_row1.addWidget(self.resize_mode)
+        resize_row1.addWidget(QLabel('%'))
+        resize_row1.addWidget(self.resize_percent)
+        resize_row1.addStretch()
+        export_v.addLayout(resize_row1)
+        resize_row2 = QHBoxLayout()
         self.resize_width = QSpinBox(); self.resize_width.setRange(16, 10000); self.resize_width.setValue(1920)
         self.resize_height = QSpinBox(); self.resize_height.setRange(16, 10000); self.resize_height.setValue(1080)
-        self.resize_percent = QSpinBox(); self.resize_percent.setRange(5, 500); self.resize_percent.setValue(100)
-        resize_row.addWidget(self.resize_mode)
-        resize_row.addWidget(QLabel('W'))
-        resize_row.addWidget(self.resize_width)
-        resize_row.addWidget(QLabel('H'))
-        resize_row.addWidget(self.resize_height)
-        resize_row.addWidget(QLabel('%'))
-        resize_row.addWidget(self.resize_percent)
-        export_v.addLayout(resize_row)
+        resize_row2.addWidget(QLabel('W'))
+        resize_row2.addWidget(self.resize_width)
+        resize_row2.addSpacing(8)
+        resize_row2.addWidget(QLabel('H'))
+        resize_row2.addWidget(self.resize_height)
+        resize_row2.addStretch()
+        export_v.addLayout(resize_row2)
         # buttons
         self.export_btn = QPushButton('Export Current…')
         self.export_all_btn = QPushButton('Export All…')
@@ -340,7 +336,7 @@ class MainWindow(QMainWindow):
         self.thumb_list.itemClicked.connect(self.on_thumb_clicked)
         self.export_btn.clicked.connect(self.on_export_current)
         self.export_all_btn.clicked.connect(self.on_export_all)
-        self.export_out_browse.clicked.connect(self._browse_out_dir)
+        # output path now chosen at export time (no persistent output folder)
         self.naming_rule.currentIndexChanged.connect(self._toggle_name_fields)
         self.resize_mode.currentIndexChanged.connect(self._toggle_resize_fields)
         self.text_input.textChanged.connect(self.update_preview)
@@ -413,10 +409,7 @@ class MainWindow(QMainWindow):
         self._toggle_name_fields()
         self._toggle_resize_fields()
 
-    def _browse_out_dir(self):
-        d = QFileDialog.getExistingDirectory(self, 'Select output folder', str(Path.home()))
-        if d:
-            self.export_out_dir.setText(d)
+    # output directory will be chosen at export time; keep no persistent field
 
     def _toggle_name_fields(self):
         mode = self.naming_rule.currentText()
@@ -443,10 +436,12 @@ class MainWindow(QMainWindow):
     def on_export_current(self):
         if not self.current_image_path:
             return
-        # determine output dir and prevent source folder overwrite
-        out_dir = self.export_out_dir.text().strip()
+        # choose output dir at export time
+        start_dir = getattr(self, '_last_export_dir', str(Path.home()))
+        out_dir = QFileDialog.getExistingDirectory(self, 'Select output folder', start_dir)
         if not out_dir:
-            QMessageBox.warning(self, 'Export', 'Please choose an output folder.'); return
+            return
+        self._last_export_dir = out_dir
         src_dir = str(Path(self.current_image_path).parent)
         if os.path.normcase(os.path.normpath(out_dir)) == os.path.normcase(os.path.normpath(src_dir)):
             QMessageBox.warning(self, 'Export', 'Exporting to the source folder is disabled by default. Please choose another folder.'); return
@@ -510,9 +505,12 @@ class MainWindow(QMainWindow):
         self._export_batch(paths)
 
     def _export_batch(self, paths):
-        out_dir = self.export_out_dir.text().strip()
+        # choose output dir at export time
+        start_dir = getattr(self, '_last_export_dir', str(Path.home()))
+        out_dir = QFileDialog.getExistingDirectory(self, 'Select output folder', start_dir)
         if not out_dir:
-            QMessageBox.warning(self, 'Export', 'Please choose an output folder.'); return
+            return
+        self._last_export_dir = out_dir
         out_dir_p = Path(out_dir)
         fmt = self.export_format.currentText().upper()
         quality = int(self.export_quality.value()) if fmt == 'JPEG' else None
