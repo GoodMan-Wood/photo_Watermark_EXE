@@ -147,7 +147,7 @@ class ThumbListWidget(QListWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Photo Watermark - Demo')
+        self.setWindowTitle('Photo Watermark')
         self.resize(1000, 700)
         self.setAcceptDrops(True)
 
@@ -381,7 +381,8 @@ class MainWindow(QMainWindow):
         self.pool = QThreadPool.globalInstance()
 
         # debug toggles
-        self._debug_thumbs = True
+        # 默认关闭缩略图调试日志（发行版更安静）
+        self._debug_thumbs = False
         # track running tasks to keep references
         self._running_tasks = []
         self._export_progress = None
@@ -394,8 +395,13 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # cache dir
-        self.cache_dir = Path(os.getcwd()) / 'cache' / 'thumbnails'
+        # cache dir：使用用户可写目录，避免发行版（只读目录）无法写入导致缩略图不可用
+        try:
+            base = get_appdata_dir()
+            self.cache_dir = base / 'cache' / 'thumbnails'
+        except Exception:
+            # 兜底回退到当前目录（开发环境）
+            self.cache_dir = Path(os.getcwd()) / 'cache' / 'thumbnails'
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         # wiring
