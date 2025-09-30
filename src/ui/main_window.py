@@ -250,6 +250,11 @@ class MainWindow(QMainWindow):
         self.position_btn.setMenu(self._anchor_menu)
         text_group = QGroupBox('Text')
         tg = QVBoxLayout()
+        try:
+            tg.setContentsMargins(8, 18, 8, 8)
+            tg.setSpacing(8)
+        except Exception:
+            pass
         tg.addWidget(self.text_input)
         color_row = QHBoxLayout();
         color_row.addWidget(QLabel('Color'))
