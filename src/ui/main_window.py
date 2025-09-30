@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-                               QListWidget, QLabel, QTextEdit, QPushButton, QSizePolicy,
+                               QListWidget, QLabel, QPushButton, QSizePolicy,
                                QFileDialog, QListWidgetItem, QFontComboBox, QSpinBox, QSlider, QColorDialog, QGridLayout, QCheckBox, QGroupBox, QScrollArea, QProgressDialog, QComboBox, QAbstractItemView, QLineEdit, QMessageBox, QFormLayout, QToolButton, QMenu, QDialog, QListWidget, QInputDialog)
 from PySide6.QtCore import Qt, QThreadPool, QSize, Signal, QRect
 from PySide6.QtGui import QPixmap, QIcon, QFont, QColor, QPainter, QShortcut, QKeySequence, QImage
@@ -231,8 +231,7 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(template_group)
 
         # ========== Text ==========
-        self.text_input = QTextEdit(); self.text_input.setPlaceholderText('Watermark text...')
-        self.text_input.setFixedHeight(64)
+        self.text_input = QLineEdit(); self.text_input.setPlaceholderText('Watermark text...')
         self.color_btn = QPushButton('Choose Color')
         # position button with popup menu
         self.position_btn = QToolButton()
@@ -263,15 +262,9 @@ class MainWindow(QMainWindow):
         text_group.setLayout(tg)
         controls_layout.addWidget(text_group)
 
-        # ========== Font ==========
+        # ========== Style (with Font & Effects merged) ==========
         self.font_combo = QFontComboBox()
         self.font_size = QSpinBox(); self.font_size.setRange(8, 200); self.font_size.setValue(36)
-        font_group = QGroupBox('Font')
-        ff = QFormLayout(); ff.addRow('Family', self.font_combo); ff.addRow('Size', self.font_size)
-        font_group.setLayout(ff)
-        controls_layout.addWidget(font_group)
-
-        # ========== Style (with Effects merged) ==========
         self.bold_cb = QCheckBox('Bold')
         self.italic_cb = QCheckBox('Italic')
         self.outline_cb = QCheckBox('Outline')
@@ -283,6 +276,9 @@ class MainWindow(QMainWindow):
         self.shadow_color_btn = QPushButton('Shadow Color')
         style_group = QGroupBox('Style')
         sf = QFormLayout()
+        # Font controls first
+        sf.addRow('Family', self.font_combo)
+        sf.addRow('Size', self.font_size)
         bold_row = QHBoxLayout(); bold_row.addWidget(self.bold_cb); bold_row.addWidget(self.italic_cb); bold_row.addStretch()
         sf.addRow('Weight', bold_row)
         outline_row = QHBoxLayout(); outline_row.addWidget(self.outline_cb); outline_row.addWidget(QLabel('Size')); outline_row.addWidget(self.outline_size); outline_row.addStretch()
@@ -294,7 +290,7 @@ class MainWindow(QMainWindow):
         style_group.setLayout(sf)
         controls_layout.addWidget(style_group)
 
-    # (Effects merged into Style)
+        # (Effects merged into Style)
 
         # ========== Transform ==========
         self.rotation_slider = QSlider(Qt.Horizontal); self.rotation_slider.setRange(-180, 180); self.rotation_slider.setValue(0)
@@ -332,8 +328,8 @@ class MainWindow(QMainWindow):
         name_row.addWidget(QLabel('Naming'))
         self.naming_rule = QComboBox()
         self.naming_rule.addItems(['Original', 'Prefix', 'Suffix'])
-        self.name_prefix = QLineEdit(); self.name_prefix.setPlaceholderText('prefix_')
-        self.name_suffix = QLineEdit(); self.name_suffix.setPlaceholderText('_suffix')
+        self.name_prefix = QLineEdit(); self.name_prefix.setText('wm_'); self.name_prefix.setPlaceholderText('wm_')
+        self.name_suffix = QLineEdit(); self.name_suffix.setText('_watermarked'); self.name_suffix.setPlaceholderText('_watermarked')
         name_row.addWidget(self.naming_rule)
         name_row.addWidget(self.name_prefix)
         name_row.addWidget(self.name_suffix)
@@ -488,12 +484,16 @@ class MainWindow(QMainWindow):
 
     def _toggle_name_fields(self):
         mode = self.naming_rule.currentText()
-        self.name_prefix.setEnabled(mode == 'Prefix')
-        self.name_suffix.setEnabled(mode == 'Suffix')
-        if mode != 'Prefix':
-            self.name_prefix.clear()
-        if mode != 'Suffix':
-            self.name_suffix.clear()
+        is_prefix = (mode == 'Prefix')
+        is_suffix = (mode == 'Suffix')
+        # 显示/隐藏对应输入框
+        self.name_prefix.setVisible(is_prefix)
+        self.name_suffix.setVisible(is_suffix)
+        # 设置默认值，但保留用户已有输入（若为空则赋默认）
+        if is_prefix and not self.name_prefix.text():
+            self.name_prefix.setText('wm_')
+        if is_suffix and not self.name_suffix.text():
+            self.name_suffix.setText('_watermarked')
 
     def _toggle_resize_fields(self):
         mode = self.resize_mode.currentText()
@@ -577,7 +577,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         try:
-            self.text_input.setPlainText(tpl.get('text', ''))
+            self.text_input.setText(tpl.get('text', ''))
             fam = tpl.get('font_family')
             if fam:
                 try:
@@ -749,7 +749,7 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def on_apply(self):
-        txt = self.text_input.toPlainText().strip()
+        txt = self.text_input.text().strip()
         if txt:
             self.preview_label.setText(txt)
         else:
@@ -1146,7 +1146,7 @@ class MainWindow(QMainWindow):
 
         # update watermark_config from controls
         self.watermark_config.update({
-            'text': self.text_input.toPlainText().strip(),
+            'text': self.text_input.text().strip(),
             'font_family': self.font_combo.currentFont().family(),
             'font_size': self.font_size.value(),
             'opacity': self.opacity_slider.value() / 100.0,
